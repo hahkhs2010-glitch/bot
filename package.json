@@ -1,0 +1,19 @@
+{
+  "name": "afnan-guard-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minecraft AFK guard bot (mineflayer) for Discloud",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "slim": "node slim.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "minecraft-protocol": "https://github.com/Complexity-ML/node-minecraft-protocol-26.2/releases/download/complexity-26.2.3/minecraft-protocol-complexity-26.2.3.tgz",
+    "mineflayer": "https://github.com/Complexity-ML/mineflayer-26.2/releases/download/complexity-26.2.3/mineflayer-complexity-26.2.3.tgz"
+  }
+}
