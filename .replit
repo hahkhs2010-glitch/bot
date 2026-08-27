@@ -1,0 +1,46 @@
+entrypoint = "index.js"
+modules = ["nodejs-22"]
+
+run = "npm start"
+
+hidden = [".config", "package-lock.json", "node_modules"]
+
+[nix]
+channel = "stable-24_05"
+
+# البوت مش بيفتح أي بورت، فنوعه Background worker مش Web server.
+# لازم يتنشر كـ Reserved VM عشان يفضل شغال ٢٤ ساعة — الأنواع التانية بتنام.
+[deployment]
+deploymentTarget = "vm"
+run = ["npm", "start"]
+
+[env]
+NODE_ENV = "production"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Minecraft AFK Guard Bot"
+
+[[workflows.workflow]]
+name = "Minecraft AFK Guard Bot"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm start"
+waitForPort = 3000
+
+[[ports]]
+localPort = 3000
+externalPort = 80
