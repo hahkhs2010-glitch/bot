@@ -23,14 +23,16 @@ app.get('/health', (_req, res) => {
   });
 });
 
-const httpServer = app.listen(HTTP_PORT, '0.0.0.0', () => {
-  console.log(`🌐 خادم البنج يعمل على المنفذ ${HTTP_PORT}`);
-});
+function startHttpServer() {
+  const httpServer = app.listen(HTTP_PORT, '0.0.0.0', () => {
+    console.log(`🌐 خادم البنج يعمل على المنفذ ${HTTP_PORT}`);
+  });
 
-httpServer.on('error', (err) => {
-  console.error('❌ تعذر تشغيل خادم Express:', err.message);
-  process.exitCode = 1;
-});
+  httpServer.on('error', (err) => {
+    console.error('❌ تعذر تشغيل خادم Express:', err.message);
+    process.exitCode = 1;
+  });
+}
 
 const MOVE_INTERVAL = 40 * 1000;
 const MOVE_MIN = 5 * 1000;
@@ -446,6 +448,8 @@ process.on('SIGTERM', () => gracefulExit('SIGTERM'));
 process.on('SIGINT', () => gracefulExit('SIGINT'));
 
 if (require.main === module) {
+  startHttpServer();
+
   setInterval(() => {
     if (quitting) return;
     const idle = Date.now() - lastActivity;
