@@ -38,7 +38,9 @@ const MOVE_MAX = 10 * 1000;
 const FIRST_MOVE_DELAY = 10 * 1000;
 const STEP_MS = 50;
 
-const LEASH = 25;
+const AREA_SIZE = 10;
+const AREA_HALF = AREA_SIZE / 2;
+const AREA_MARGIN = 0.35;
 const VERT_LEASH = 6;
 
 const RECONNECT_BASE = 10 * 1000;
@@ -99,6 +101,33 @@ function yawToVector(yaw) {
   return { x: -Math.sin(yaw), z: -Math.cos(yaw) };
 }
 
+function areaBounds(origin) {
+  return {
+    minX: origin.x - AREA_HALF,
+    maxX: origin.x + AREA_HALF,
+    minZ: origin.z - AREA_HALF,
+    maxZ: origin.z + AREA_HALF
+  };
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function isInsideArea(pos, origin, margin = 0) {
+  const bounds = areaBounds(origin);
+  return (
+    pos.x >= bounds.minX + margin &&
+    pos.x <= bounds.maxX - margin &&
+    pos.z >= bounds.minZ + margin &&
+    pos.z <= bounds.maxZ - margin
+  );
+}
+
+function headingToPoint(pos, target) {
+  return Math.atan2(-(target.x - pos.x), -(target.z - pos.z));
+}
+
 function chooseHeading(pos, origin, leash, jitter = rand) {
   const dx = pos.x - origin.x;
   const dz = pos.z - origin.z;
@@ -109,6 +138,21 @@ function chooseHeading(pos, origin, leash, jitter = rand) {
     return back + jitter(-Math.PI / 4, Math.PI / 4);
   }
   return jitter(-Math.PI, Math.PI);
+}
+
+function chooseAreaHeading(pos, origin, jitter = rand) {
+  const bounds = areaBounds(origin);
+  const target = {
+    x: rand(bounds.minX + 1, bounds.maxX - 1),
+    z: rand(bounds.minZ + 1, bounds.maxZ - 1)
+  };
+
+  if (pos.x <= bounds.minX + AREA_MARGIN) target.x = bounds.maxX - 1;
+  if (pos.x >= bounds.maxX - AREA_MARGIN) target.x = bounds.minX + 1;
+  if (pos.z <= bounds.minZ + AREA_MARGIN) target.z = bounds.maxZ - 1;
+  if (pos.z >= bounds.maxZ - AREA_MARGIN) target.z = bounds.minZ + 1;
+
+  return headingToPoint(pos, target) + jitter(-0.12, 0.12);
 }
 
 async function createBot(attempt = 0) {
@@ -179,12 +223,13 @@ async function createBot(attempt = 0) {
 
   activeReconnect = reconnect;
 
-  const chooseYaw = () => chooseHeading(bot.entity.position, origin, LEASH);
+  const chooseYaw = () => chooseAreaHeading(bot.entity.position, origin);
 
   async function glide(durationMs) {
-    const yaw = chooseYaw();
+    let yaw = chooseYaw();
     const pitch = rand(-0.25, 0.25);
-    const dir = yawToVector(yaw);
+    let dir = yawToVector(yaw);
+    const bounds = areaBounds(origin);
     const speed = rand(0.10, 0.20);
     let climb = rand(-0.03, 0.03);
     const steps = Math.round(durationMs / STEP_MS);
@@ -194,9 +239,14 @@ async function createBot(attempt = 0) {
     for (let i = 0; i < steps; i++) {
       if (!online()) return;
 
+      if (i % 10 === 0) {
+        yaw = chooseYaw();
+        dir = yawToVector(yaw);
+      }
+
       const p = bot.entity.position;
-      p.x += dir.x * speed;
-      p.z += dir.z * speed;
+      p.x = clamp(p.x + dir.x * speed, bounds.minX, bounds.maxX);
+      p.z = clamp(p.z + dir.z * speed, bounds.minZ, bounds.maxZ);
 
       const nextY = p.y + climb;
       if (Math.abs(nextY - origin.y) <= VERT_LEASH) {
@@ -221,25 +271,50 @@ async function createBot(attempt = 0) {
   }
 
   async function walk(durationMs) {
-    const dirs = ['forward', 'back', 'left', 'right'];
-    const dir = dirs[Math.floor(Math.random() * dirs.length)];
-    const half = durationMs / 2;
+    const endsAt = Date.now() + durationMs;
+    const bounds = areaBounds(origin);
 
-    await bot.look(rand(-Math.PI, Math.PI), rand(-0.2, 0.2), false).catch(() => {});
+    try {
+      while (Date.now() < endsAt && online()) {
+        const current = bot.entity.position;
+        const target = isInsideArea(current, origin)
+          ? {
+              x: rand(bounds.minX + 1, bounds.maxX - 1),
+              z: rand(bounds.minZ + 1, bounds.maxZ - 1)
+            }
+          : { x: origin.x, z: origin.z };
+        const yaw = headingToPoint(current, target);
+        const segmentEndsAt = Math.min(endsAt, Date.now() + rand(800, 1800));
 
-    const opposite = { forward: 'back', back: 'forward', left: 'right', right: 'left' }[dir];
+        await bot.look(yaw, rand(-0.2, 0.2), false).catch(() => {});
+        bot.setControlState('forward', true);
 
-    bot.setControlState(dir, true);
-    await sleep(half);
-    bot.setControlState(dir, false);
-    if (!online()) return;
+        while (Date.now() < segmentEndsAt && online()) {
+          const p = bot.entity.position;
+          const velocity = bot.entity.velocity;
+          const projected = {
+            x: p.x + velocity.x * 3,
+            z: p.z + velocity.z * 3
+          };
 
-    await sleep(300);
-    if (!online()) return;
+          if (
+            !isInsideArea(p, origin, AREA_MARGIN) ||
+            !isInsideArea(projected, origin, AREA_MARGIN) ||
+            Math.hypot(target.x - p.x, target.z - p.z) < 0.8
+          ) {
+            break;
+          }
 
-    bot.setControlState(opposite, true);
-    await sleep(half);
-    bot.setControlState(opposite, false);
+          await sleep(STEP_MS);
+        }
+
+        bot.setControlState('forward', false);
+        if (!online()) return;
+        await sleep(300);
+      }
+    } finally {
+      bot.setControlState('forward', false);
+    }
   }
 
   async function moveOnce() {
@@ -304,7 +379,7 @@ async function createBot(attempt = 0) {
 
     console.log(
       `📍 نقطة البداية: ${origin.x.toFixed(0)}, ${origin.y.toFixed(0)}, ${origin.z.toFixed(0)}` +
-      ` (مش هيبعد أكتر من ${LEASH} بلوك)`
+      ` (نطاق مربع ${AREA_SIZE}×${AREA_SIZE} فقط)`
     );
 
     scheduleNext(FIRST_MOVE_DELAY);
