@@ -34,10 +34,9 @@ function startHttpServer() {
   });
 }
 
-const MOVE_INTERVAL = 40 * 1000;
-const MOVE_MIN = 5 * 1000;
-const MOVE_MAX = 10 * 1000;
-const FIRST_MOVE_DELAY = 10 * 1000;
+const MOVE_INTERVAL = 10 * 1000;
+const SHUTTLE_DISTANCE = 5;
+const FIRST_MOVE_DELAY = 1000;
 const STEP_MS = 50;
 
 const AREA_SIZE = 10;
@@ -181,8 +180,12 @@ async function createBot(attempt = 0) {
   let spawned = false;
   let loopTimer = null;
   let watchdog = null;
+  let idleLookTimer = null;
   let duplicate = false;
   let origin = null;
+  let shuttleYaw = null;
+  let shuttlePitch = 0;
+  let moving = false;
 
   const online = () =>
     alive && spawned && bot.entity && bot._client && bot._client.state === 'play';
@@ -199,6 +202,10 @@ async function createBot(attempt = 0) {
     if (watchdog) {
       clearTimeout(watchdog);
       watchdog = null;
+    }
+    if (idleLookTimer) {
+      clearTimeout(idleLookTimer);
+      idleLookTimer = null;
     }
   }
 
@@ -225,112 +232,102 @@ async function createBot(attempt = 0) {
 
   activeReconnect = reconnect;
 
-  const chooseYaw = () => chooseAreaHeading(bot.entity.position, origin);
+  function fixedDirection() {
+    if (shuttleYaw === null) {
+      shuttleYaw = Number.isFinite(bot.entity.yaw) ? bot.entity.yaw : 0;
+      shuttlePitch = Number.isFinite(bot.entity.pitch) ? bot.entity.pitch : 0;
+    }
+    return yawToVector(shuttleYaw);
+  }
 
-  async function glide(durationMs) {
-    let yaw = chooseYaw();
-    const pitch = rand(-0.25, 0.25);
-    let dir = yawToVector(yaw);
+  async function glideDistance(distance, directionSign) {
+    const dir = fixedDirection();
     const bounds = areaBounds(origin);
-    const speed = rand(0.10, 0.20);
-    let climb = rand(-0.03, 0.03);
-    const steps = Math.round(durationMs / STEP_MS);
+    const speed = rand(0.10, 0.16);
+    const start = bot.entity.position.clone();
+    let travelled = 0;
 
-    await bot.look(yaw, pitch, false).catch(() => {});
+    await bot.look(shuttleYaw, shuttlePitch, false).catch(() => {});
 
-    for (let i = 0; i < steps; i++) {
+    while (travelled < distance && online()) {
+      const step = Math.min(speed, distance - travelled);
+      travelled += step;
       if (!online()) return;
 
-      if (i % 10 === 0) {
-        yaw = chooseYaw();
-        dir = yawToVector(yaw);
-      }
-
       const p = bot.entity.position;
-      p.x = clamp(p.x + dir.x * speed, bounds.minX, bounds.maxX);
-      p.z = clamp(p.z + dir.z * speed, bounds.minZ, bounds.maxZ);
-
-      const nextY = p.y + climb;
-      if (Math.abs(nextY - origin.y) <= VERT_LEASH) {
-        p.y = nextY;
-      } else {
-        climb = -climb;
-      }
+      p.x = clamp(start.x + dir.x * directionSign * travelled, bounds.minX, bounds.maxX);
+      p.z = clamp(start.z + dir.z * directionSign * travelled, bounds.minZ, bounds.maxZ);
+      p.y = clamp(p.y, origin.y - VERT_LEASH, origin.y + VERT_LEASH);
 
       bot.entity.velocity.set(0, 0, 0);
       bot.entity.onGround = false;
-
-      if (i % 20 === 19) {
-        bot.look(
-          yaw + rand(-0.25, 0.25),
-          pitch + rand(-0.12, 0.12),
-          false
-        ).catch(() => {});
-      }
-
       await sleep(STEP_MS);
     }
   }
 
-  async function walk(durationMs) {
-    const endsAt = Date.now() + durationMs;
-    const bounds = areaBounds(origin);
+  async function walkDistance(distance, directionSign) {
+    const dir = fixedDirection();
+    const start = bot.entity.position.clone();
+    const control = directionSign > 0 ? 'forward' : 'back';
+    const maxDuration = Math.max(2500, distance * 1200);
+    const endsAt = Date.now() + maxDuration;
+    let lastTravelled = 0;
 
+    await bot.look(shuttleYaw, shuttlePitch, false).catch(() => {});
+    bot.setControlState(control, true);
     try {
       while (Date.now() < endsAt && online()) {
-        const current = bot.entity.position;
-        const target = isInsideArea(current, origin)
-          ? {
-              x: rand(bounds.minX + 1, bounds.maxX - 1),
-              z: rand(bounds.minZ + 1, bounds.maxZ - 1)
-            }
-          : { x: origin.x, z: origin.z };
-        const yaw = headingToPoint(current, target);
-        const segmentEndsAt = Math.min(endsAt, Date.now() + rand(800, 1800));
+        const p = bot.entity.position;
+        const travelled = Math.max(
+          0,
+          ((p.x - start.x) * dir.x + (p.z - start.z) * dir.z) * directionSign
+        );
+        lastTravelled = travelled;
+        const velocity = bot.entity.velocity;
+        const projected = {
+          x: p.x + velocity.x * 3,
+          z: p.z + velocity.z * 3
+        };
 
-        await bot.look(yaw, rand(-0.2, 0.2), false).catch(() => {});
-        bot.setControlState('forward', true);
-
-        while (Date.now() < segmentEndsAt && online()) {
-          const p = bot.entity.position;
-          const velocity = bot.entity.velocity;
-          const projected = {
-            x: p.x + velocity.x * 3,
-            z: p.z + velocity.z * 3
-          };
-
-          if (
-            !isInsideArea(p, origin, AREA_MARGIN) ||
-            !isInsideArea(projected, origin, AREA_MARGIN) ||
-            Math.hypot(target.x - p.x, target.z - p.z) < 0.8
-          ) {
-            break;
-          }
-
-          await sleep(STEP_MS);
+        if (
+          travelled >= distance - AREA_MARGIN ||
+          !isInsideArea(p, origin, AREA_MARGIN) ||
+          !isInsideArea(projected, origin, AREA_MARGIN)
+        ) {
+          break;
         }
 
-        bot.setControlState('forward', false);
-        if (!online()) return;
-        await sleep(300);
+        await sleep(STEP_MS);
       }
     } finally {
-      bot.setControlState('forward', false);
+      bot.setControlState(control, false);
     }
+    return lastTravelled;
   }
 
   async function moveOnce() {
     if (!online()) return;
 
-    const duration = rand(MOVE_MIN, MOVE_MAX);
+    const started = Date.now();
     const before = bot.entity.position.clone();
+    const dir = fixedDirection();
+    moving = true;
 
     try {
-      if (isFlying()) await glide(duration);
-      else await walk(duration);
+      if (isFlying()) {
+        await glideDistance(SHUTTLE_DISTANCE, 1);
+        await sleep(300);
+        await glideDistance(SHUTTLE_DISTANCE, -1);
+      } else {
+        await walkDistance(SHUTTLE_DISTANCE, 1);
+        await sleep(300);
+        await walkDistance(SHUTTLE_DISTANCE, -1);
+      }
     } catch (e) {
       console.error('⚠️ فشلت الحركة:', e.message);
       return;
+    } finally {
+      moving = false;
     }
 
     if (!online()) return;
@@ -343,10 +340,26 @@ async function createBot(attempt = 0) {
       Math.pow(p.x - origin.x, 2) + Math.pow(p.z - origin.z, 2)
     );
     console.log(
-      `🤖 تحرك ${moved.toFixed(1)} بلوك خلال ${(duration / 1000).toFixed(1)} ثانية` +
+      `🤖 تحرك 5 للأمام و5 للخلف خلال ${((Date.now() - started) / 1000).toFixed(1)} ثانية` +
       ` | الموقع: ${p.x.toFixed(0)}, ${p.y.toFixed(1)}, ${p.z.toFixed(0)}` +
-      ` | بُعده عن البداية: ${fromHome.toFixed(1)}`
+      ` | بُعده عن البداية: ${fromHome.toFixed(1)}` +
+      ` | الاتجاه ثابت`
     );
+  }
+
+  function scheduleIdleLook(delay = rand(1500, 3000)) {
+    if (!alive) return;
+    idleLookTimer = setTimeout(async () => {
+      if (online() && !moving && shuttleYaw !== null) {
+        await bot.look(
+          shuttleYaw + rand(-0.12, 0.12),
+          shuttlePitch + rand(-0.08, 0.08),
+          false
+        ).catch(() => {});
+        beat();
+      }
+      scheduleIdleLook();
+    }, delay);
   }
 
   function scheduleNext(delay = MOVE_INTERVAL) {
@@ -370,6 +383,8 @@ async function createBot(attempt = 0) {
       watchdog = null;
     }
     origin = bot.entity.position.clone();
+    shuttleYaw = Number.isFinite(bot.entity.yaw) ? bot.entity.yaw : 0;
+    shuttlePitch = Number.isFinite(bot.entity.pitch) ? bot.entity.pitch : 0;
 
     console.log('✅ البوت دخل السيرفر بنجاح! 🤖');
     console.log(`🎮 وضع اللعب: ${bot.game.gameMode}`);
@@ -381,9 +396,10 @@ async function createBot(attempt = 0) {
 
     console.log(
       `📍 نقطة البداية: ${origin.x.toFixed(0)}, ${origin.y.toFixed(0)}, ${origin.z.toFixed(0)}` +
-      ` (نطاق مربع ${AREA_SIZE}×${AREA_SIZE} فقط)`
+      ` (نطاق مربع ${AREA_SIZE}×${AREA_SIZE} فقط | 5 أمام و5 خلف)`
     );
 
+    scheduleIdleLook();
     scheduleNext(FIRST_MOVE_DELAY);
   });
 
