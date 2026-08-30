@@ -45,8 +45,8 @@ const RECONNECT_BASE = 10 * 1000;
 const RECONNECT_MAX = 5 * 60 * 1000;
 
 const USERNAME = process.env.BOT_USERNAME || 'AfnanGuardBot';
-const HOST = process.env.BOT_HOST || 'MinecraftRetards.aternos.me';
-const DEFAULT_PORT = Number(process.env.BOT_PORT) || 23164;
+const HOST = process.env.BOT_HOST || 'huseen_2010-pwHT.aternos.me';
+const DEFAULT_PORT = Number(process.env.BOT_PORT) || 50610;
 const VERSION = process.env.BOT_VERSION || '26.2';
 
 const SPAWN_TIMEOUT = 60 * 1000;
